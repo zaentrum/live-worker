@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    # A release: the tag vX.Y.Z publishes the image as :vX.Y.Z and :X.Y.
+    tags: ['v*.*.*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # The FFmpeg 7.1 build the image ships (Dockerfile): its shared
+      # libraries and pkg-config files are what the worker links against.
+      FFMPEG_BUILD_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n7.1.5-12-g1fdbca85aa-linux64-gpl-shared-7.1.tar.xz
+      FFMPEG_SHA256: df7e15a2d2fe0ee15ae36e0e3b83596dd088ee0a0767874241d9a54380df0add
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: FFmpeg 7.1 libraries
+        run: |
+          curl -fsSL "$FFMPEG_BUILD_URL" -o "$RUNNER_TEMP/ffmpeg.tar.xz"
+          echo "$FFMPEG_SHA256  $RUNNER_TEMP/ffmpeg.tar.xz" | sha256sum -c -
+          sudo mkdir -p /opt/ffmpeg
+          sudo tar -xJf "$RUNNER_TEMP/ffmpeg.tar.xz" -C /opt/ffmpeg --strip-components=1
+          {
+            echo "PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig"
+            echo "LD_LIBRARY_PATH=/opt/ffmpeg/lib"
+            echo "CGO_LDFLAGS=-Wl,-rpath,/opt/ffmpeg/lib"
+          } >> "$GITHUB_ENV"
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      # The CPU path: libx264, swscale, zscale. The GPU path needs a GPU.
+      - run: go test -race -timeout 15m ./...
+      - name: The supervisor builds without cgo
+        run: CGO_ENABLED=0 go build -o /dev/null ./cmd/live-worker
+
+  image:
+    needs: test
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # main publishes :latest and :<commit>. A release tag publishes :vX.Y.Z
+      # and :X.Y (no :X.Y for a pre-release such as v1.2.0-rc.1), and leaves
+      # :latest where main put it.
+      - name: Tags
+        id: tags
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tags="$IMAGE:$GITHUB_REF_NAME"
+            case "$GITHUB_REF_NAME" in
+              *-*) ;;
+              *) v="${GITHUB_REF_NAME#v}"; tags="$tags,$IMAGE:${v%.*}" ;;
+            esac
+          else
+            tags="$IMAGE:latest,$IMAGE:$GITHUB_SHA"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
