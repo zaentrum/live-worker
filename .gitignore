@@ -1,0 +1,21 @@
+# Go
+*.test
+*.out
+/bin/
+/dist/
+coverage.txt
+go.work
+go.work.sum
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Media scratch: never commit, but the test titles testdata/make.sh makes.
+*.mp4
+*.mkv
+*.m4s
+!testdata/*.mp4
+!testdata/*.mkv
