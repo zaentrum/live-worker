@@ -12,6 +12,12 @@ permissions:
   contents: read
 
 jobs:
+  # The organisation's shared neutrality check.
+  neutrality:
+    permissions:
+      contents: read
+    uses: zaentrum/.github/.github/workflows/neutrality.yml@v1
+
   test:
     runs-on: ubuntu-latest
     env:
